@@ -6,13 +6,13 @@
  * Full-featured ESP32 D1 Mini - Actual Board Pinout controller for Chinese diesel heaters
  * 
  * Features:
- * - WiFi AP mode (default) + STA mode
+ * - WiFi STA mode with AP recovery fallback
  * - Web GUI (dark theme)
  * - OLED SH1106 display (IP + status)
  * - Auto/Manual pairing
  * - Real-time heater control
  * - MQTT integration (Home Assistant ready)
- * - ERROR CODE DECODING (BYTE[7]) 
+ * - ERROR CODE DECODING (BYTE[7])
  * 
  * Hardware:
  * - ESP32
@@ -20,7 +20,7 @@
  * - SH1106 OLED (I2C)
  * 
  * ═══════════════════════════════════════════════════════════════════════════
- *                      Version: V1.2.1 - ERROR CODES
+ *                      Version: V2.2 - CLEANED
  * ═══════════════════════════════════════════════════════════════════════════
  * Changes:
  * - Added error code decoding from BYTE[7]
@@ -28,13 +28,6 @@
  * - Error code published to MQTT
  * - Error history tracking (last 10 errors)
  * - Pre-Heat weekly scheduling with NTP time synchronisation
- * - Frost Mode - Start heater below certain temp shut down when reaches temp, minimum time before can start again.
- * - Pre Heat - Select on and off time, only starts if below target temp
- * - Custom Name - Name heater which will show in top bar in place of diesel pilot customise in Config
- * - Currently only setup as UK time with daylight saving
- * - Slight OLED changes/positioning. Scrolling text when frost mode or pre heat engaged, Also on display to advise when enabled. Wifi signal strength.
- * - Physical buttons added for Up/Down/Power/Mode
- * - Text scroll speed for oled in Web Config, Frost Mode/Pre Heat status in Status Dashboard on web
  */
 
 
@@ -126,16 +119,18 @@ U8G2_SH1106_128X64_NONAME_F_HW_I2C display(U8G2_R0, U8X8_PIN_NONE);
 // ═══════════════════════════════════════════════════════════════════════════
 
 //Versions
-String version = "1.4.1";
+String version = "1.4";
 // WiFi
 String apSSID = "Diesel-Pilot";
 String apPassword = "12345678";
-String staSSID = "";
-String staPassword = "";
+String staSSID = "SEARS";
+String staPassword = "Summer08Mylee";
 bool useAP = true;
 bool apStarted = false;
 bool staConnected = false;
 bool timeFromNTP = false;
+String timeZone = "Europe/London";
+bool daylightSavingEnabled = true;
 unsigned long lastNtpAttempt = 0;
 unsigned long lastTimeSave = 0;
 
@@ -242,7 +237,6 @@ const char* getErrorName(uint8_t code) {
         default:               return "UNKNOWN";
     }
 }
-
 
 
 void addErrorToHistory(uint8_t errorCode) {
@@ -504,12 +498,52 @@ void saveLastKnownTime() {
     lastTimeSave = millis();
 }
 
-void configureUKTimezone() {
-    // Keep NTP itself in UTC, then explicitly apply UK local time rules.
-    // configTime() can reset the timezone environment, so this must be
-    // applied after every configTime() call.
-    setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0/2", 1);
+void applyTimezone() {
+    // ESP32 uses POSIX TZ strings. These common zones cover the most useful
+    // choices for DieselPilot while keeping the firmware self-contained.
+    String tz = "UTC0";
+
+    if(timeZone == "Europe/London") {
+        tz = daylightSavingEnabled ? "GMT0BST,M3.5.0/1,M10.5.0/2" : "GMT0";
+    } else if(timeZone == "Europe/Dublin") {
+        tz = daylightSavingEnabled ? "GMT0IST,M3.5.0/1,M10.5.0/2" : "GMT0";
+    } else if(timeZone == "Europe/Paris") {
+        tz = daylightSavingEnabled ? "CET-1CEST,M3.5.0/2,M10.5.0/3" : "CET-1";
+    } else if(timeZone == "Europe/Berlin") {
+        tz = daylightSavingEnabled ? "CET-1CEST,M3.5.0/2,M10.5.0/3" : "CET-1";
+    } else if(timeZone == "America/New_York") {
+        tz = daylightSavingEnabled ? "EST5EDT,M3.2.0/2,M11.1.0/2" : "EST5";
+    } else if(timeZone == "America/Chicago") {
+        tz = daylightSavingEnabled ? "CST6CDT,M3.2.0/2,M11.1.0/2" : "CST6";
+    } else if(timeZone == "America/Denver") {
+        tz = daylightSavingEnabled ? "MST7MDT,M3.2.0/2,M11.1.0/2" : "MST7";
+    } else if(timeZone == "America/Los_Angeles") {
+        tz = daylightSavingEnabled ? "PST8PDT,M3.2.0/2,M11.1.0/2" : "PST8";
+    } else if(timeZone == "America/Toronto") {
+        tz = daylightSavingEnabled ? "EST5EDT,M3.2.0/2,M11.1.0/2" : "EST5";
+    } else if(timeZone == "Australia/Sydney") {
+        tz = daylightSavingEnabled ? "AEST-10AEDT,M10.1.0/2,M4.1.0/3" : "AEST-10";
+    } else if(timeZone == "Pacific/Auckland") {
+        tz = daylightSavingEnabled ? "NZST-12NZDT,M9.5.0/2,M4.1.0/3" : "NZST-12";
+    } else if(timeZone == "Asia/Kolkata") {
+        tz = "IST-5:30";
+    } else if(timeZone == "Asia/Tokyo") {
+        tz = "JST-9";
+    } else if(timeZone == "Asia/Singapore") {
+        tz = "SGT-8";
+    }
+
+    setenv("TZ", tz.c_str(), 1);
     tzset();
+    Serial.println("Timezone applied: " + timeZone + " | DST: " + String(daylightSavingEnabled ? "ON" : "OFF"));
+}
+
+String getCurrentTimeString() {
+    struct tm t;
+    if(!getLocalDateTime(t)) return "--:--";
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%02d:%02d", t.tm_hour, t.tm_min);
+    return String(buf);
 }
 
 void handleTimeSync() {
@@ -518,7 +552,7 @@ void handleTimeSync() {
     if(staConnected && !timeFromNTP && millis() - lastNtpAttempt >= 10000) {
         lastNtpAttempt = millis();
         configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
-        configureUKTimezone();
+        applyTimezone();
     }
 
     // Only call the time source NTP after the SNTP client confirms a sync.
@@ -607,7 +641,6 @@ void handlePreheatSchedule() {
         preheatManualOverride = false;
         preheatStartSetpoint = -1000;
         preheatLastMinute = -1;
-    Serial.println("DIAG 2: Preferences/settings loaded");
     }
 
     if(!selectedToday || preheatOnMinute >= preheatOffMinute) return;
@@ -1466,7 +1499,7 @@ void handleRoot() {
                 <div class="info-box">
                     <strong>How it works:</strong><br>
                     On selected days the heater will be started at the ON time and, if Pre-Heat started it, stopped at the OFF time.<br>
-                    If the target temperature is changed during the scheduled period, the automatic OFF command is cancelled for that day, Heater will only start if ambient temperature is below target.
+                    If the target temperature is changed during the scheduled period, the automatic OFF command is cancelled for that day.
                 </div>
 
                 <h3 style="color:#ff6b00; margin:20px 0 10px;">Days</h3>
@@ -1635,6 +1668,44 @@ void handleRoot() {
                     <strong>Arduino IDE:</strong> Tools → Port → Network Ports → [hostname]<br>
                     <strong>Command Line:</strong> <code>platformio run -t upload --upload-port [IP]</code>
                 </div>
+            </div>
+            
+            <!-- TIME CONFIG -->
+            <div class="card">
+                <h2>🕐 Time & Time Zone</h2>
+                <div class="form-row">
+                    <div>
+                        <label style="color:#888;">Time Zone</label>
+                        <select id="timeZone" style="max-width:280px;">
+                            <option value="Europe/London">London (GMT/BST)</option>
+                            <option value="Europe/Dublin">Dublin (GMT/IST)</option>
+                            <option value="Europe/Paris">Paris (CET/CEST)</option>
+                            <option value="Europe/Berlin">Berlin (CET/CEST)</option>
+                            <option value="America/New_York">New York (EST/EDT)</option>
+                            <option value="America/Chicago">Chicago (CST/CDT)</option>
+                            <option value="America/Denver">Denver (MST/MDT)</option>
+                            <option value="America/Los_Angeles">Los Angeles (PST/PDT)</option>
+                            <option value="America/Toronto">Toronto (EST/EDT)</option>
+                            <option value="Australia/Sydney">Sydney (AEST/AEDT)</option>
+                            <option value="Pacific/Auckland">Auckland (NZST/NZDT)</option>
+                            <option value="Asia/Kolkata">India (IST)</option>
+                            <option value="Asia/Tokyo">Tokyo (JST)</option>
+                            <option value="Asia/Singapore">Singapore (SGT)</option>
+                            <option value="UTC">UTC</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="toggle-container" style="margin-top:12px;">
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="daylightSavingEnabled">
+                        <span class="toggle-slider"></span>
+                    </label>
+                    <span class="toggle-label">Enable daylight saving time</span>
+                </div>
+                <div class="info-box">
+                    <strong>ℹ️ Daylight saving:</strong> When enabled, supported time zones automatically change between their standard and daylight-saving offsets. Turn it off to keep standard time year-round.
+                </div>
+                <button class="btn" onclick="saveTimeSettings()">💾 SAVE TIME SETTINGS</button>
             </div>
             
             <!-- OLED DISPLAY CONFIG -->
@@ -1811,6 +1882,10 @@ void handleRoot() {
                     if(document.activeElement !== document.getElementById('preheatScrollSpeed')) {
                         document.getElementById('preheatScrollSpeed').value = d.preheatScrollSpeed;
                     }
+                    if(document.activeElement !== document.getElementById('timeZone')) {
+                        document.getElementById('timeZone').value = d.timeZone || 'Europe/London';
+                    }
+                    document.getElementById('daylightSavingEnabled').checked = d.daylightSavingEnabled !== false;
 
                     // Smart labels
                     if(d.mode === 'AUTO') {
@@ -1980,6 +2055,17 @@ void handleRoot() {
                 .then(r => r.text()).then(alert);
         }
         
+        function saveTimeSettings() {
+            let zone = document.getElementById('timeZone').value;
+            let dst = document.getElementById('daylightSavingEnabled').checked ? '1' : '0';
+            fetch('/api/time?zone=' + encodeURIComponent(zone) + '&dst=' + dst)
+                .then(r => r.text())
+                .then(msg => {
+                    alert(msg);
+                    updateStatus();
+                });
+        }
+
         function saveDisplaySettings() {
             let frost = parseInt(document.getElementById('frostScrollSpeed').value);
             let preheat = parseInt(document.getElementById('preheatScrollSpeed').value);
@@ -2085,7 +2171,10 @@ void handleAPI_Status() {
     json += "\"preheatOff\":\"" + formatScheduleTime(preheatOffMinute) + "\",";
     json += "\"timeSynced\":" + String(timeSynced ? "true" : "false") + ",";
     json += "\"timeSource\":\"" + String(timeFromNTP ? "NTP" : (timeSynced ? "LAST KNOWN" : "WAITING")) + "\",";
-    json += "\"currentUKTime\":\"" + getCurrentUKTimeString() + "\",";
+    json += "\"currentUKTime\":\"" + getCurrentTimeString() + "\",";
+    json += "\"currentTime\":\"" + getCurrentTimeString() + "\",";
+    json += "\"timeZone\":\"" + timeZone + "\",";
+    json += "\"daylightSavingEnabled\":" + String(daylightSavingEnabled ? "true" : "false") + ",";
     json += "\"frostScrollSpeed\":" + String(frostStatusScrollInterval) + ",";
     json += "\"preheatScrollSpeed\":" + String(preheatStatusScrollInterval);
     
@@ -2212,7 +2301,6 @@ void handleAPI_Preheat() {
     preheatOffCancelledToday = false;
     preheatStartSetpoint = -1000;
     preheatLastMinute = -1;
-    Serial.println("DIAG 2: Preferences/settings loaded");
 
     Serial.println(String("⏰ Pre-Heat ") + (preheatEnabled ? "ENABLED" : "DISABLED") +
                    " | Days mask: " + String(preheatDays) +
@@ -2224,6 +2312,36 @@ void handleAPI_Preheat() {
     } else {
         server.send(200, "text/plain", "Pre-Heat schedule saved");
     }
+}
+
+void handleAPI_Time() {
+    String requestedZone = server.arg("zone");
+    bool requestedDST = (server.arg("dst") == "1");
+
+    // Only accept zones implemented by applyTimezone().
+    const char* validZones[] = {
+        "Europe/London", "Europe/Dublin", "Europe/Paris", "Europe/Berlin",
+        "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles",
+        "America/Toronto", "Australia/Sydney", "Pacific/Auckland", "Asia/Kolkata",
+        "Asia/Tokyo", "Asia/Singapore", "UTC"
+    };
+    bool valid = false;
+    for(size_t i = 0; i < sizeof(validZones) / sizeof(validZones[0]); i++) {
+        if(requestedZone == validZones[i]) { valid = true; break; }
+    }
+
+    if(!valid) {
+        server.send(400, "text/plain", "Invalid time zone");
+        return;
+    }
+
+    timeZone = requestedZone;
+    daylightSavingEnabled = requestedDST;
+    prefs.putString("timeZone", timeZone);
+    prefs.putBool("dstEnabled", daylightSavingEnabled);
+    applyTimezone();
+
+    server.send(200, "text/plain", "Time zone settings saved");
 }
 
 void handleAPI_Display() {
@@ -2292,16 +2410,12 @@ void handleAPI_MQTT() {
     prefs.putString("mqttUser", mqttUser);
     prefs.putString("mqttPass", mqttPassword);
     prefs.putBool("mqttEnabled", mqttEnabled);
-    
-    Serial.println("DIAG 6: Starting WiFi setup");
     WiFi.setHostname(deviceName.c_str());
     
     server.send(200, "text/plain", "MQTT saved!");
     
     if(mqttEnabled) {
-        Serial.println("DIAG 13: Starting MQTT");
         connectMQTT();
-        Serial.println("DIAG 14: MQTT connect returned");
     }
 }
 
@@ -2426,6 +2540,79 @@ void handlePhysicalButtons() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Load all saved user settings from Preferences.
+void loadSettings() {
+    heaterAddress = prefs.getUInt("heaterAddr", 0);
+
+    heaterPaired = (heaterAddress != 0);
+    deviceName = prefs.getString("deviceName", "DieselPilot");
+
+    heaterName = prefs.getString("heaterName", "Diesel Pilot");
+
+    staSSID = prefs.getString("staSSID", "");
+
+    staPassword = prefs.getString("staPass", "");
+
+    timeZone = prefs.getString("timeZone", "Europe/London");
+    daylightSavingEnabled = prefs.getBool("dstEnabled", true);
+
+    // If no WiFi credentials have previously been saved in Preferences,
+    // use the credentials defined at the top of the sketch.
+    if (staSSID.length() == 0) {
+        staSSID = "SEARS";
+        staPassword = "Summer08Mylee";
+        Serial.println("WiFi credentials not saved - using sketch defaults");
+    }
+
+    mqttServer = prefs.getString("mqttServer", "");
+
+    mqttPort = prefs.getInt("mqttPort", 1883);
+
+    mqttTopic = prefs.getString("mqttTopic", "diesel");
+
+    mqttAuthEnabled = prefs.getBool("mqttAuthEn", false);
+
+    mqttUser = prefs.getString("mqttUser", "");
+
+    mqttPassword = prefs.getString("mqttPass", "");
+
+    mqttEnabled = prefs.getBool("mqttEnabled", false);
+
+    otaEnabled = prefs.getBool("otaEnabled", true);
+
+    otaPassword = prefs.getString("otaPass", "dieselpilot");
+
+    frostMode = prefs.getBool("frostMode", false);
+
+    frostStartTemp = prefs.getInt("frostStart", 3);
+
+    frostStopTemp = prefs.getInt("frostStop", 10);
+
+    frostRestartDelayMinutes = (uint16_t)constrain(prefs.getUInt("frostRestart", 30), 30UL, 240UL);
+
+    if(frostStopTemp < frostStartTemp + 5) frostStopTemp = frostStartTemp + 5;
+    frostHeaterStarted = false;
+
+    preheatEnabled = prefs.getBool("preheatEn", false);
+
+    preheatDays = prefs.getUChar("preheatDays", 0);
+
+    preheatOnMinute = prefs.getUShort("preheatOn", 420);
+
+    preheatOffMinute = prefs.getUShort("preheatOff", 480);
+
+    preheatHeaterStarted = false;
+    preheatOffCancelledToday = false;
+    preheatSessionDay = -1;
+    preheatStartSetpoint = -1000;
+    preheatLastMinute = -1;
+
+    // OLED scroll speeds (milliseconds per pixel step)
+    frostStatusScrollInterval = constrain((unsigned long)prefs.getUInt("frostScroll", 120), 50UL, 500UL);
+    preheatStatusScrollInterval = constrain((unsigned long)prefs.getUInt("preheatScroll", 120), 50UL, 500UL);
+    
+}
+
 // SETUP
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -2443,120 +2630,23 @@ void setup() {
     display.setContrast(155);
     displayLine1 = "Diesel Pilot";
     displayLine2 = "Starting...";
-    displayLine3 = "PPTG remixed";
+    displayLine3 = "Mixed up by Sears";
     displayLine4 = "Happy Heating :)";
     updateDisplay();
     Serial.println("✅ OLED initialized");
-    Serial.println("DIAG 1: OLED stage complete");
     delay(2000);
 #else
     Serial.println("ℹ️  OLED disabled");
 #endif
-    
-    Serial.println("DIAG 2.0: prefs.begin starting");
     prefs.begin("diesel", false);
-    Serial.println("DIAG 2.1: prefs.begin complete");
 
-    heaterAddress = prefs.getUInt("heaterAddr", 0);
-    Serial.println("DIAG 2.2: heaterAddr complete");
+    loadSettings();
 
-    heaterPaired = (heaterAddress != 0);
-    deviceName = prefs.getString("deviceName", "DieselPilot");
-    Serial.println("DIAG 2.3: deviceName complete");
-
-    heaterName = prefs.getString("heaterName", "Diesel Pilot");
-    Serial.println("DIAG 2.4: heaterName complete");
-
-    staSSID = prefs.getString("staSSID", "");
-    Serial.println("DIAG 2.5: staSSID complete");
-
-    staPassword = prefs.getString("staPass", "");
-    Serial.println("DIAG 2.6: staPassword complete");
-
-    // If no WiFi credentials have previously been saved in Preferences,
-    // use the credentials defined at the top of the sketch.
-    if (staSSID.length() == 0) {
-        staSSID = "SEARS";
-        staPassword = "Summer08Mylee";
-        Serial.println("WiFi credentials not saved - using sketch defaults");
-    }
-
-    mqttServer = prefs.getString("mqttServer", "");
-    Serial.println("DIAG 2.7: mqttServer complete");
-
-    mqttPort = prefs.getInt("mqttPort", 1883);
-    Serial.println("DIAG 2.8: mqttPort complete");
-
-    mqttTopic = prefs.getString("mqttTopic", "diesel");
-    Serial.println("DIAG 2.9: mqttTopic complete");
-
-    mqttAuthEnabled = prefs.getBool("mqttAuthEn", false);
-    Serial.println("DIAG 2.10: mqttAuthEnabled complete");
-
-    mqttUser = prefs.getString("mqttUser", "");
-    Serial.println("DIAG 2.11: mqttUser complete");
-
-    mqttPassword = prefs.getString("mqttPass", "");
-    Serial.println("DIAG 2.12: mqttPassword complete");
-
-    mqttEnabled = prefs.getBool("mqttEnabled", false);
-    Serial.println("DIAG 2.13: mqttEnabled complete");
-
-    otaEnabled = prefs.getBool("otaEnabled", true);
-    Serial.println("DIAG 2.14: otaEnabled complete");
-
-    otaPassword = prefs.getString("otaPass", "dieselpilot");
-    Serial.println("DIAG 2.15: otaPassword complete");
-
-    frostMode = prefs.getBool("frostMode", false);
-    Serial.println("DIAG 2.16: frostMode complete");
-
-    frostStartTemp = prefs.getInt("frostStart", 3);
-    Serial.println("DIAG 2.17: frostStart complete");
-
-    frostStopTemp = prefs.getInt("frostStop", 10);
-    Serial.println("DIAG 2.18: frostStop complete");
-
-    frostRestartDelayMinutes = (uint16_t)constrain(prefs.getUInt("frostRestart", 30), 30UL, 240UL);
-    Serial.println("DIAG 2.19: frostRestart complete");
-
-    if(frostStopTemp < frostStartTemp + 5) frostStopTemp = frostStartTemp + 5;
-    frostHeaterStarted = false;
-    Serial.println("DIAG 2.20: Frost variables complete");
-
-    preheatEnabled = prefs.getBool("preheatEn", false);
-    Serial.println("DIAG 2.21: preheatEnabled complete");
-
-    preheatDays = prefs.getUChar("preheatDays", 0);
-    Serial.println("DIAG 2.22: preheatDays complete");
-
-    preheatOnMinute = prefs.getUShort("preheatOn", 420);
-    Serial.println("DIAG 2.23: preheatOn complete");
-
-    preheatOffMinute = prefs.getUShort("preheatOff", 480);
-    Serial.println("DIAG 2.24: preheatOff complete");
-
-    preheatHeaterStarted = false;
-    preheatOffCancelledToday = false;
-    preheatSessionDay = -1;
-    preheatStartSetpoint = -1000;
-    preheatLastMinute = -1;
-    Serial.println("DIAG 2.25: Preferences/settings loaded");
-
-    // OLED scroll speeds (milliseconds per pixel step)
-    Serial.println("DIAG 2.26: Reading frost scroll speed");
-    frostStatusScrollInterval = constrain((unsigned long)prefs.getUInt("frostScroll", 120), 50UL, 500UL);
-    Serial.println("DIAG 2.27: Frost scroll speed complete");
-    Serial.println("DIAG 2.28: Reading preheat scroll speed");
-    preheatStatusScrollInterval = constrain((unsigned long)prefs.getUInt("preheatScroll", 120), 50UL, 500UL);
-    Serial.println("DIAG 2.29: Preheat scroll speed complete");
-    
     // Physical control buttons
     pinMode(BUTTON_POWER, INPUT_PULLUP);
     pinMode(BUTTON_UP, INPUT_PULLUP);
     pinMode(BUTTON_DOWN, INPUT_PULLUP);
     pinMode(BUTTON_MODE, INPUT_PULLUP);
-    Serial.println("DIAG 3: Buttons initialized");
 
     pinMode(PIN_SCK, OUTPUT);
     pinMode(PIN_MOSI, OUTPUT);
@@ -2564,18 +2654,13 @@ void setup() {
     pinMode(PIN_SS, OUTPUT);
     pinMode(PIN_GDO2, INPUT);
     SPI.begin(PIN_SCK, PIN_MISO, PIN_MOSI, PIN_SS);
-    Serial.println("DIAG 4: SPI initialized");
     cc1101_init();
-    Serial.println("DIAG 5: CC1101 init returned");
-    
-    Serial.println("DIAG 6: Starting WiFi setup");
     WiFi.setHostname(deviceName.c_str());
     WiFi.mode(WIFI_AP_STA);
 
-    // Always start the DieselPilot access point so the local web interface
-    // remains available. If WiFi credentials exist, also connect to the
-    // user's router at the same time so the ESP32 has internet access for NTP.
-    Serial.println("DIAG 7: Calling WiFi.softAP()");
+    // Start the DieselPilot access point initially as a recovery network.
+    // If normal WiFi connects successfully, the AP is shut down below.
+    // If normal WiFi fails, the AP remains available for recovery/configuration.
     apStarted = WiFi.softAP(apSSID.c_str(), apPassword.c_str());
     useAP = apStarted;
     if(apStarted) {
@@ -2600,15 +2685,24 @@ void setup() {
             staConnected = true;
             Serial.println("\n✅ WiFi connected!");
             Serial.println("STA IP: " + WiFi.localIP().toString());
+
+            // Normal WiFi is now available, so shut down the DieselPilot
+            // recovery access point. This leaves the ESP32 in STA-only mode.
+            if(apStarted) {
+                Serial.println("🔌 Stopping DieselPilot AP - normal WiFi is connected");
+                WiFi.softAPdisconnect(true);
+                apStarted = false;
+            }
+            WiFi.mode(WIFI_STA);
+            useAP = false;
+
             displayLine2 = "WiFi: " + staSSID;
             displayLine3 = WiFi.localIP().toString();
         } else {
             staConnected = false;
-            Serial.println("\n⚠️ WiFi not connected - AP remains available");
+            Serial.println("\n⚠️ WiFi not connected - AP remains available for recovery");
         }
     }
-
-    Serial.println("DIAG 8: WiFi/AP setup complete");
 
     // Restore a previously saved time immediately. If NTP is available it will
     // replace this fallback shortly afterwards.
@@ -2616,7 +2710,7 @@ void setup() {
 
     if(staConnected) {
         configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
-        configureUKTimezone();
+        applyTimezone();
         lastNtpAttempt = millis();
         struct tm initialTime;
         if(getLocalDateTime(initialTime)) {
@@ -2629,23 +2723,15 @@ void setup() {
     } else {
         Serial.println("⚠️ No WiFi connection and no saved time - Pre-Heat waiting for NTP");
     }
-
-    Serial.println("DIAG 9: Time setup complete");
     displayLine4 = heaterPaired ? "Paired!" : "Not paired";
     updateDisplay();
-    
-    Serial.println("DIAG 10: Display/status setup complete");
     // Init OTA (only if connected to WiFi, not in AP mode)
     if(staConnected && otaEnabled) {
-        Serial.println("DIAG 11: Starting OTA");
         setupOTA();
-        Serial.println("DIAG 12: OTA setup complete");
     }
     
     if(mqttEnabled) {
-        Serial.println("DIAG 13: Starting MQTT");
         connectMQTT();
-        Serial.println("DIAG 14: MQTT connect returned");
     }
     
     server.on("/", handleRoot);
@@ -2655,6 +2741,7 @@ void setup() {
     server.on("/api/heatername", handleAPI_HeaterName);
     server.on("/api/frost", handleAPI_Frost);
     server.on("/api/preheat", handleAPI_Preheat);
+    server.on("/api/time", handleAPI_Time);
     server.on("/api/display", handleAPI_Display);
     server.on("/api/pair/auto", handleAPI_PairAuto);
     server.on("/api/pair/manual", handleAPI_PairManual);
@@ -2663,9 +2750,7 @@ void setup() {
     server.on("/api/ota", handleAPI_OTA);
     server.on("/api/factory", handleAPI_Factory);
     server.on("/api/reboot", handleAPI_Reboot);
-    Serial.println("DIAG 15: Starting web server");
     server.begin();
-    Serial.println("DIAG 16: Web server started");
     
     Serial.println("\n✅ Web server started");
     Serial.println("Ready!");
