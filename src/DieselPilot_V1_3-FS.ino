@@ -123,8 +123,8 @@ String version = "1.4";
 // WiFi
 String apSSID = "Diesel-Pilot";
 String apPassword = "12345678";
-String staSSID = "SEARS";
-String staPassword = "Summer08Mylee";
+String staSSID = "";
+String staPassword = "";
 bool useAP = true;
 bool apStarted = false;
 bool staConnected = false;
@@ -2559,8 +2559,8 @@ void loadSettings() {
     // If no WiFi credentials have previously been saved in Preferences,
     // use the credentials defined at the top of the sketch.
     if (staSSID.length() == 0) {
-        staSSID = "SEARS";
-        staPassword = "Summer08Mylee";
+        staSSID = "";
+        staPassword = "";
         Serial.println("WiFi credentials not saved - using sketch defaults");
     }
 
@@ -2630,7 +2630,7 @@ void setup() {
     display.setContrast(155);
     displayLine1 = "Diesel Pilot";
     displayLine2 = "Starting...";
-    displayLine3 = "Mixed up by Sears";
+    displayLine3 = "Made by PPTG tweaked by Sears";
     displayLine4 = "Happy Heating :)";
     updateDisplay();
     Serial.println("✅ OLED initialized");
